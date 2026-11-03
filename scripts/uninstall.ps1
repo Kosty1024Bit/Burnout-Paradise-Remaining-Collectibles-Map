@@ -7,7 +7,7 @@ $receipt = Get-Content -Raw -LiteralPath (Join-Path $root 'artifacts/install-rec
 if ($game -ne $receipt.gameDirectory) { throw 'Install receipt belongs to another game folder.' }
 $dll = Join-Path $game 'dinput8.dll'
 if ((Test-Path -LiteralPath $dll) -and (Get-FileHash -LiteralPath $dll).Hash -ne $receipt.dllSha256) { throw 'DLL changed; refusing to remove another mod.' }
-foreach ($name in @('dinput8.dll','CenterSpeedometer.ini','CenterSpeedometer.log')) {
+foreach ($name in @('dinput8.dll','CenterSpeedometer.ini','CenterSpeedometer.log','Collectibles.ini','Collectibles.bin','Collectibles-map.bmp')) {
     $target = Join-Path $game $name
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target }
 }
