@@ -32,3 +32,13 @@ Oracle: inspect artifacts/map-test_small.png; log completed41/65 jumps,331/475 g
 Gotcha: instruction mnemonics do not uniquely determine bytes. `mov ebx,esp` is89E3 in this executable, and `mov ebp,esp` is89E5 in relocated functions; guards initially assumed alternate encodings. Log actual runtime bytes and guard those exactly. No executable/DRM changes or bypasses needed.
 
 References: [archive format](https://github.com/DGIorio/bundle_packer_unpacker), [public reconstruction for semantic hints](https://github.com/BurnoutDecomp/b5-decomp). All PC widths, offsets, types and counts independently checked against local executable/data and live runtime. No reconstructed source is distributed.
+
+## Driving minimap extension, 2026-11-04
+
+The same native transforms drive both menu and HUD maps. PC SetZoomedWorldRect0x4F8610 (body0x032BB070) stores the world-XZ-to-unit matrix atVA0x149A000 (three16-byte rows). SetZoomedViewportRect0x4F8760 (body0x032BB6C0) stores unit-to-GUI-pixel matrix atVA0x149A3B0. Existing normalized-to-device matrix0x149A1F0 supplies the GUI dimensions. Reuse these matrices during the active driving HUD; no new hooks or approximation from car speed/heading is required. Reject large/fullscreen viewports during transitions, clip inside the small viewport, and omit offscreen markers rather than clamping all of them onto the edge.
+
+At2560×1421 client size the stock minimap rect measured(1992,945.4)-(2384,1231.5). Driving logs show native basis scale0.0013333 at0km/h to0.0008732 at150km/h, with3–28 remaining markers. User confirmed correct movement after driving/turning. Stock map is north-up; synthetic quarter-turn projection test passed, but a separate rotating-map mod was not live-tested. Snapshot inspected on driver-stats pause screen verifies HUD-marker suppression only; positive alignment evidence is user confirmation + native logs. Preserve settings on update; absent Minimap/MenuMap keys default to enabled.
+
+### Correction: window client vs render surface
+
+Later user testing found a small northward offset despite correct motion. Version1.1 used GetClientRect as ImGui DisplaySize while rendering onto a larger backbuffer. The above rect was therefore a client-sized overlay rect, not the correct native-buffer rect. Runtime1.1.1 confirmed buffer2560×1440 with client2560×1400. Use the actual ID3D11Texture2D backbuffer descriptor for ImGui dimensions and GUI-to-overlay scaling; DXGI then stretches game and markers together. Correct buffer-space minimap rect is(1992,958)-(2384,1248). A fixed Y offset would fail at another client height. Regression test covers this exact mismatch and presentation scaling. World matrices and object coordinates are unchanged.

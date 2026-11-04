@@ -7,7 +7,9 @@ $dll=Join-Path $PSScriptRoot 'dinput8.dll'
 $target=Join-Path $game 'dinput8.dll'
 $ownHash=(Get-FileHash -LiteralPath $dll).Hash
 $legacyHash='0162755E2F03F2EEB9ECC7C2931389C528C378C97D252C8C071978BA401481CE'
-if((Test-Path -LiteralPath $target) -and ((Get-FileHash -LiteralPath $target).Hash -notin @($ownHash,$legacyHash))){throw 'Another dinput8 mod is installed. Refusing to overwrite it.'}
+$collectibles10Hash='B4C0872612220138CD04415131D71D8BAB6DFA044B0BC64F24D7D6D77C8278B1'
+$collectibles11Hash='611C23BA51BA3B0CA15C1A8DAD021D6F42CF751B014676EA36AA5EA4B58EB424'
+if((Test-Path -LiteralPath $target) -and ((Get-FileHash -LiteralPath $target).Hash -notin @($ownHash,$legacyHash,$collectibles10Hash,$collectibles11Hash))){throw 'Another dinput8 mod is installed. Refusing to overwrite it.'}
 $stamp=Get-Date -Format 'yyyyMMdd-HHmmss'
 $backup=Join-Path $PSScriptRoot "backups/$stamp"
 New-Item -ItemType Directory -Path $backup -Force | Out-Null
@@ -22,6 +24,6 @@ $cache=Join-Path $backup 'prepared-Collectibles.bin'
 if($LASTEXITCODE){throw 'Coordinate cache preparation failed. Game files unchanged.'}
 Copy-Item -LiteralPath $dll -Destination $target
 Copy-Item -LiteralPath $cache -Destination (Join-Path $game 'Collectibles.bin')
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Collectibles.ini') -Destination (Join-Path $game 'Collectibles.ini')
+if(-not(Test-Path -LiteralPath (Join-Path $game 'Collectibles.ini'))){Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Collectibles.ini') -Destination (Join-Path $game 'Collectibles.ini')}
 if(-not(Test-Path -LiteralPath (Join-Path $game 'CenterSpeedometer.ini'))){Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'CenterSpeedometer.ini') -Destination (Join-Path $game 'CenterSpeedometer.ini')}
 Write-Output "Installed. Backup: $backup"

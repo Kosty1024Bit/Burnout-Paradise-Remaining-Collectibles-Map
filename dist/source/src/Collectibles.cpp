@@ -1,4 +1,5 @@
 #include "Collectibles.hpp"
+#include "MapProjection.hpp"
 #include <MinHook.h>
 #include <algorithm>
 #include <array>
@@ -28,7 +29,9 @@ void (*writeLog)(const char*);
 std::vector<Marker> markers;
 std::array<std::set<uint32_t>,3> completed;
 bool shown=true, categories[3]{true,true,true}, ready=false;
+bool minimapEnabled=true, menuMapEnabled=true;
 float markerScale=1;
+const ImU32 colors[3]{IM_COL32(90,210,255,255),IM_COL32(255,206,65,255),IM_COL32(255,105,160,255)};
 
 bool ReadBytes(uintptr_t a,void* out,size_t n) {
     SIZE_T got=0; return a>=0x10000 && ReadProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(a),out,n,&got) && got==n;
@@ -91,6 +94,55 @@ bool RefreshProgress() {
     }
     completed=std::move(next); return true;
 }
+
+void DrawMarker(ImDrawList* draw,ImVec2 p,uint32_t kind,float r,float s) {
+    draw->AddCircleFilled(p,r+1.6f*s,IM_COL32(0,0,0,220),12);
+    if(kind==0)draw->AddTriangleFilled(ImVec2(p.x,p.y-r-s),ImVec2(p.x-r,p.y+r),ImVec2(p.x+r,p.y+r),colors[0]);
+    else if(kind==1)draw->AddRectFilled(ImVec2(p.x-r,p.y-r*.6f),ImVec2(p.x+r,p.y+r*.6f),colors[1],s);
+    else draw->AddQuadFilled(ImVec2(p.x,p.y-r),ImVec2(p.x+r,p.y),ImVec2(p.x,p.y+r),ImVec2(p.x-r,p.y),colors[2]);
+}
+
+bool DrawMinimap() {
+    if(!ready)return false;
+    MapProjection::Matrix world{},viewport{},device{};
+    // Shared native map transforms. The sat-nav updates rotation and speed zoom itself.
+    if(!Read(VA(0x149a000),world) || !Read(VA(0x149a3b0),viewport) || !Read(VA(0x149a1f0),device) ||
+       !MapProjection::Finite(world) || !MapProjection::Finite(viewport) || !MapProjection::Finite(device))return false;
+    const float det=world.row[0]*world.row[5]-world.row[1]*world.row[4];
+    if(std::abs(det)<1e-10f || std::abs(det)>.001f)return false;
+    const auto display=ImGui::GetIO().DisplaySize;
+    const auto fullA=MapProjection::Transform({0,0},device),fullB=MapProjection::Transform({1,1},device);
+    float guiW=std::abs(fullB.x-fullA.x),guiH=std::abs(fullB.y-fullA.y);
+    if(guiW<100 || guiH<100)return false;
+    auto screen=[&](MapProjection::Point p) {
+        auto q=MapProjection::GuiToSurface(MapProjection::Transform(p,viewport),{guiW,guiH},{display.x,display.y});
+        return ImVec2(q.x,q.y);
+    };
+    const auto a=screen({0,0}),b=screen({1,1});
+    const ImVec2 clipMin(std::min(a.x,b.x),std::min(a.y,b.y)),clipMax(std::max(a.x,b.x),std::max(a.y,b.y));
+    const float width=clipMax.x-clipMin.x,height=clipMax.y-clipMin.y;
+    // The fullscreen menu also writes these globals: reject it during HUD transitions.
+    if(width<30 || height<30 || width>display.x*.45f || height>display.y*.45f ||
+       clipMin.x<0 || clipMin.y<0 || clipMax.x>display.x || clipMax.y>display.y)return false;
+    if(std::abs(viewport.row[1])>.01f || std::abs(viewport.row[4])>.01f)return false;
+    const float s=std::clamp(display.y/1080.f,.5f,4.f),r=3.f*s*markerScale;
+    const float insetX=(r+2*s)/width,insetY=(r+2*s)/height;
+    auto* draw=ImGui::GetForegroundDrawList();
+    draw->PushClipRect(clipMin,clipMax,true);
+    int visible=0;
+    for(const auto& m:markers) {
+        if(!categories[m.kind] || completed[m.kind].count(m.id))continue;
+        const auto unit=MapProjection::Transform({m.x,m.z},world);
+        if(!MapProjection::Inside(unit,insetX,insetY))continue;
+        DrawMarker(draw,screen(unit),m.kind,r,s);++visible;
+    }
+    draw->PopClipRect();
+    static ULONGLONG lastLog=0;
+    if(GetTickCount64()-lastLog>5000) {
+        char line[320];std::snprintf(line,sizeof(line),"Collectibles minimap: markers=%d rect=%.1f %.1f %.1f %.1f; world basis=%.7f %.7f %.7f %.7f",visible,clipMin.x,clipMin.y,clipMax.x,clipMax.y,world.row[0],world.row[1],world.row[4],world.row[5]);writeLog(line);lastLog=GetTickCount64();
+    }
+    return true;
+}
 }
 
 bool InitializeCollectibles(uintptr_t gameBase,const std::wstring& directory,void (*log)(const char*)) {
@@ -101,6 +153,8 @@ bool InitializeCollectibles(uintptr_t gameBase,const std::wstring& directory,voi
     }
     const auto config=directory+L"Collectibles.ini";
     if(!GetPrivateProfileIntW(L"Collectibles",L"Enabled",1,config.c_str()))return false;
+    minimapEnabled=GetPrivateProfileIntW(L"Collectibles",L"Minimap",1,config.c_str())!=0;
+    menuMapEnabled=GetPrivateProfileIntW(L"Collectibles",L"MenuMap",1,config.c_str())!=0;
     shown=true;
     categories[0]=GetPrivateProfileIntW(L"Collectibles",L"Jumps",1,config.c_str())!=0;
     categories[1]=GetPrivateProfileIntW(L"Collectibles",L"Smashes",1,config.c_str())!=0;
@@ -125,11 +179,11 @@ bool InitializeCollectibles(uintptr_t gameBase,const std::wstring& directory,voi
     bool load=Hook(0x00a078f0,reinterpret_cast<void*>(OnLoad),reinterpret_cast<void**>(&originalLoad),loadBytes,sizeof(loadBytes));
     bool done=Hook(0x03215650,reinterpret_cast<void*>(OnDone),reinterpret_cast<void**>(&originalDone),doneBytes,sizeof(doneBytes));
     if(!load && !done){log("Collectibles: no profile observation hook. Disabled.");return false;}
-    log("Collectibles: native menu-map hooks ready; 65 jumps, 475 smashes, 165 billboards; F6/F7/F8/F9.");
+    log("Collectibles 1.1.1: menu map + driving minimap ready; render-surface coordinates; F6/F7/F8/F9.");
     return true;
 }
 
-bool DrawCollectibles(HWND window,ImFont* font) {
+bool DrawCollectibles(HWND window,ImFont* font,bool drivingHud) {
     if(markers.empty() || !originalMap)return false;
     if(GetForegroundWindow()==window) {
         static bool held[4]{};
@@ -140,17 +194,19 @@ bool DrawCollectibles(HWND window,ImFont* font) {
         }
     }
     if(!shown)return false;
+    uintptr_t game=0;unsigned char online=1;
+    if(!Read(VA(0x13fc8e0),game) || !Read(game+0xb6d415,online) || online)return false;
+    static ULONGLONG lastRefresh=0;
+    if(GetTickCount64()-lastRefresh>250){ready=RefreshProgress();lastRefresh=GetTickCount64();}
+    if(drivingHud)return minimapEnabled && DrawMinimap();
+    if(!menuMapEnabled)return false;
     MapEvent event{}; ULONGLONG tick=0;
     {std::lock_guard<std::mutex> lock(mapMutex);event=latestMap;tick=mapTick;}
     if(!tick || GetTickCount64()-tick>200 || event.active!=1 || event.type!=0)return false;
-    uintptr_t game=0;unsigned char online=1;
-    if(!Read(VA(0x13fc8e0),game) || !Read(game+0xb6d415,online) || online)return false;
     for(auto f:event.world)if(!std::isfinite(f) || std::abs(f)>100000)return false;
     for(auto f:event.view)if(!std::isfinite(f) || std::abs(f)>10)return false;
     float dx=event.world[2]-event.world[0], dz=event.world[3]-event.world[1];
     if(std::abs(dx)<10 || std::abs(dz)<10)return false;
-    static ULONGLONG lastRefresh=0;
-    if(GetTickCount64()-lastRefresh>250){ready=RefreshProgress();lastRefresh=GetTickCount64();}
     float matrix[12]{};
     if(!Read(VA(0x149a1f0),matrix))return false;
     for(auto f:matrix)if(!std::isfinite(f) || std::abs(f)>100000)return false;
@@ -170,7 +226,6 @@ bool DrawCollectibles(HWND window,ImFont* font) {
     if(clipMax.x<=clipMin.x || clipMax.y<=clipMin.y)return false;
     const float s=std::clamp(display.y/1080.f,.5f,4.f), r=4.2f*s*markerScale;
     auto* draw=ImGui::GetForegroundDrawList();
-    const ImU32 colors[3]{IM_COL32(90,210,255,255),IM_COL32(255,206,65,255),IM_COL32(255,105,160,255)};
     draw->PushClipRect(clipMin,clipMax,true);
     int visible=0;
     if(ready)for(auto m:markers) {
@@ -179,10 +234,7 @@ bool DrawCollectibles(HWND window,ImFont* font) {
         if(u<0 || u>1 || v<0 || v>1)continue;
         ImVec2 p=fit(screen(event.view[0]+u*(event.view[2]-event.view[0]),event.view[1]+v*(event.view[3]-event.view[1])));
         if(p.x<clipMin.x || p.x>clipMax.x || p.y<clipMin.y || p.y>clipMax.y)continue;
-        draw->AddCircleFilled(p,r+1.6f*s,IM_COL32(0,0,0,220),12);
-        if(m.kind==0)draw->AddTriangleFilled(ImVec2(p.x,p.y-r-1*s),ImVec2(p.x-r,p.y+r),ImVec2(p.x+r,p.y+r),colors[0]);
-        else if(m.kind==1)draw->AddRectFilled(ImVec2(p.x-r,p.y-r*.6f),ImVec2(p.x+r,p.y+r*.6f),colors[1],s);
-        else {ImVec2 a(p.x,p.y-r),b(p.x+r,p.y),c(p.x,p.y+r),d(p.x-r,p.y);draw->AddQuadFilled(a,b,c,d,colors[2]);}
+        DrawMarker(draw,p,m.kind,r,s);
         ++visible;
     }
     draw->PopClipRect();

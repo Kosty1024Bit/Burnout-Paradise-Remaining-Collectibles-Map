@@ -123,8 +123,24 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain* swap, UINT sync, UINT flag
             DXGI_SWAP_CHAIN_DESC desc{};
             swap->GetDesc(&desc);
             RECT client{}; GetClientRect(desc.OutputWindow, &client);
+            ID3D11Texture2D* backBuffer = nullptr;
+            ID3D11RenderTargetView* target = nullptr;
+            D3D11_TEXTURE2D_DESC bufferDesc{};
+            if (SUCCEEDED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer)))) {
+                backBuffer->GetDesc(&bufferDesc);
+                hudDevice->CreateRenderTargetView(backBuffer,nullptr,&target);
+                backBuffer->Release();
+            }
             ImGuiIO& io = ImGui::GetIO();
-            io.DisplaySize = ImVec2(static_cast<float>(client.right), static_cast<float>(client.bottom));
+            // Coordinates must use the RTV's pixels. DXGI may stretch a 1440px buffer
+            // into a shorter window client; using that client height shifts HUD marks north.
+            io.DisplaySize = ImVec2(static_cast<float>(bufferDesc.Width), static_cast<float>(bufferDesc.Height));
+            static UINT lastBufferWidth=0,lastBufferHeight=0;
+            static LONG lastClientWidth=0,lastClientHeight=0;
+            if(bufferDesc.Width!=lastBufferWidth || bufferDesc.Height!=lastBufferHeight || client.right!=lastClientWidth || client.bottom!=lastClientHeight) {
+                char message[180];std::snprintf(message,sizeof(message),"Overlay surface: buffer %ux%u; window client %ldx%ld",bufferDesc.Width,bufferDesc.Height,client.right,client.bottom);Log(message);
+                lastBufferWidth=bufferDesc.Width;lastBufferHeight=bufferDesc.Height;lastClientWidth=client.right;lastClientHeight=client.bottom;
+            }
             LARGE_INTEGER now{}, frequency{}; QueryPerformanceCounter(&now); QueryPerformanceFrequency(&frequency);
             static LONGLONG lastTick = 0;
             io.DeltaTime = lastTick ? std::clamp(static_cast<float>(now.QuadPart-lastTick)/frequency.QuadPart,0.001f,0.1f) : 1.0f/60.0f;
@@ -141,14 +157,8 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain* swap, UINT sync, UINT flag
                 ImGui_ImplDX11_NewFrame();
                 ImGui::NewFrame();
                 if (valid && enabled) DrawSpeedometer(kmh, settings, hudFont);
-                bool mapDrawn=collectiblesEnabled && DrawCollectibles(desc.OutputWindow, hudFont);
+                bool mapDrawn=collectiblesEnabled && DrawCollectibles(desc.OutputWindow, hudFont, valid);
                 ImGui::Render();
-                ID3D11Texture2D* backBuffer = nullptr;
-                ID3D11RenderTargetView* target = nullptr;
-                if (SUCCEEDED(swap->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&backBuffer)))) {
-                    hudDevice->CreateRenderTargetView(backBuffer,nullptr,&target);
-                    backBuffer->Release();
-                }
                 if (target) {
                     ID3D11RenderTargetView* oldTargets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
                     ID3D11DepthStencilView* oldDepth = nullptr;
@@ -160,9 +170,9 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDXGISwapChain* swap, UINT sync, UINT flag
                     hudDeviceContext->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT,oldTargets,oldDepth);
                     for (auto* old : oldTargets) if(old) old->Release();
                     if (oldDepth) oldDepth->Release();
-                    target->Release();
                 }
             }
+            if(target)target->Release();
         }
         ImGui::SetCurrentContext(previousContext);
     }
